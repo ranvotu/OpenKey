@@ -450,7 +450,7 @@ BEGIN
     IDS_TRAY_TITLE_2        "Bấm vào đây để tắt gõ Tiếng Việt"
     IDS_STRING_CONVERT_COMPLETED 
                             "Chuyển mã thành công!\nKết quả đã được lưu trong Clipboard!"
-    IDS_MAIN_DIALOG_TITLE   "OpenKey %s - Bộ gõ Tiếng Việt"
+    IDS_MAIN_DIALOG_TITLE   "OpenKey"
     IDS_STRING_MODERN_ORTHORGRAPHY "Bor d"
     IDC_OPENKEY             "OPENKEY"
     IDS_STRING_MORDEN_ORTHORGRAPHY 
