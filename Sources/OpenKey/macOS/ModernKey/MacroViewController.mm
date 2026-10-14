@@ -26,6 +26,8 @@
     vector<string> macroContent;
 }
 
+@synthesize macroContent = _macroContent;
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.tableView.dataSource = self;

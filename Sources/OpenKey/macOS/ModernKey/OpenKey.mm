@@ -9,6 +9,8 @@
 #import <Carbon/Carbon.h>
 #import <Foundation/Foundation.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <mach/mach_time.h>
+#import <unistd.h>
 #import <unordered_map>
 #import <vector>
 #if __has_include("Engine.h")
@@ -196,14 +198,79 @@ extern "C" {
         return false;
     }
 
+    BOOL isTerminalApp(NSString* topApp) {
+        if (!topApp || topApp.length == 0) return NO;
+        static NSSet *terminalApps = nil;
+        if (!terminalApps) {
+            terminalApps = [[NSSet alloc] initWithArray:@[
+                @"com.apple.Terminal",
+                @"com.googlecode.iterm2",
+                @"net.kovidgoyal.kitty",
+                @"alacritty",
+                @"io.alacritty",
+                @"org.alacritty",
+                @"dev.warp.Warp-Stable",
+                @"dev.warp.Warp",
+                @"com.mitchellh.ghostty",
+                @"com.github.wez.wezterm",
+                @"co.zeit.hyper",
+                @"org.tabby"
+            ]];
+        }
+        if ([terminalApps containsObject:topApp]) return YES;
+        NSString *lower = [topApp lowercaseString];
+        if ([lower containsString:@"terminal"] || 
+            [lower containsString:@"iterm"] || 
+            [lower containsString:@"ghostty"] || 
+            [lower containsString:@"alacritty"] || 
+            [lower containsString:@"kitty"] || 
+            [lower containsString:@"wezterm"] || 
+            [lower containsString:@"warp"]) {
+            return YES;
+        }
+        return NO;
+    }
+
+    BOOL isBrowserApp(NSString* topApp) {
+        if (!topApp || topApp.length == 0) return NO;
+        static NSSet *browserApps = nil;
+        if (!browserApps) {
+            browserApps = [[NSSet alloc] initWithArray:@[
+                @"com.google.Chrome",
+                @"com.google.Chrome.canary",
+                @"com.apple.Safari",
+                @"com.apple.SafariTechnologyPreview",
+                @"com.brave.Browser",
+                @"com.microsoft.edgemac",
+                @"com.microsoft.edgemac.Dev",
+                @"com.microsoft.edgemac.Beta",
+                @"com.microsoft.Edge",
+                @"org.mozilla.firefox",
+                @"com.operasoftware.Opera",
+                @"com.vivaldi.Vivaldi",
+                @"company.thebrowser.Browser"
+            ]];
+        }
+        if ([browserApps containsObject:topApp]) return YES;
+        NSString *lower = [topApp lowercaseString];
+        return [lower containsString:@"chrome"] || 
+               [lower containsString:@"browser"] || 
+               [lower containsString:@"safari"] || 
+               [lower containsString:@"firefox"] ||
+               [lower containsString:@"edge"];
+    }
+
     BOOL shouldUseRecommendWorkaround(NSString* topApp) {
         if (!vFixRecommendBrowser) return false;
         if (isSpotlightVisible()) return false;
-        if (topApp == nil) return true;
+        if (topApp == nil) return false;
+        if (isTerminalApp(topApp)) return false;
+        if (!isBrowserApp(topApp)) return false;
         return ![_recommendWorkaroundDisabledApp containsObject:topApp];
     }
 
     BOOL shouldUseSelectionReplacement(NSString* topApp) {
+        if (isTerminalApp(topApp)) return false;
         return isSpotlightVisible() || [_recommendWorkaroundDisabledApp containsObject:topApp];
     }
     
@@ -355,6 +422,9 @@ extern "C" {
         
         NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
         if (!frontApp) return CaretRestoreResult::Unsupported;
+        if (isTerminalApp(frontApp.bundleIdentifier)) {
+            return CaretRestoreResult::Unsupported;
+        }
         
         AXUIElementRef appElem = AXUIElementCreateApplication(frontApp.processIdentifier);
         if (!appElem) return CaretRestoreResult::Unsupported;
@@ -707,15 +777,31 @@ extern "C" {
         CFRelease(eventVkeyUp);
     }
 
-    void SendBackspace() {
-        CGEventTapPostEvent(_proxy, eventBackSpaceDown);
-        CGEventTapPostEvent(_proxy, eventBackSpaceUp);
+    void SendSingleBackspace(bool isTerminal = false) {
+        CGEventRef bsDown = CGEventCreateKeyboardEvent(myEventSource, 51, true);
+        CGEventRef bsUp = CGEventCreateKeyboardEvent(myEventSource, 51, false);
+        uint64_t now = mach_absolute_time();
+        CGEventSetTimestamp(bsDown, now);
+        CGEventSetTimestamp(bsUp, now);
+        
+        CGEventTapPostEvent(_proxy, bsDown);
+        CGEventTapPostEvent(_proxy, bsUp);
+        
+        CFRelease(bsDown);
+        CFRelease(bsUp);
+        
+        if (isTerminal) {
+            usleep(1500); // 1.5ms inter-keystroke spacing for terminal PTY line discipline
+        }
+    }
+
+    void SendBackspace(bool isTerminal = false) {
+        SendSingleBackspace(isTerminal);
         
         if (IS_DOUBLE_CODE(vCodeTable)) { //VNI or Unicode Compound
             if (_syncKey.back() > 1) {
                 if (!(vCodeTable == 3 && containUnicodeCompoundApp(FRONT_APP))) {
-                    CGEventTapPostEvent(_proxy, eventBackSpaceDown);
-                    CGEventTapPostEvent(_proxy, eventBackSpaceUp);
+                    SendSingleBackspace(isTerminal);
                 }
             }
             _syncKey.pop_back();
@@ -836,6 +922,9 @@ extern "C" {
         
         _newEventDown = CGEventCreateKeyboardEvent(myEventSource, 0, true);
         _newEventUp = CGEventCreateKeyboardEvent(myEventSource, 0, false);
+        uint64_t now = mach_absolute_time();
+        CGEventSetTimestamp(_newEventDown, now);
+        CGEventSetTimestamp(_newEventUp, now);
         CGEventKeyboardSetUnicodeString(_newEventDown, _willContinuteSending ? 16 : _newCharSize - offset, _newCharString);
         CGEventKeyboardSetUnicodeString(_newEventUp, _willContinuteSending ? 16 : _newCharSize - offset, _newCharString);
         CGEventTapPostEvent(_proxy, _newEventDown);
@@ -883,8 +972,10 @@ extern "C" {
     }
     
     void handleMacro() {
+        NSString* frontApp = FRONT_APP;
+        BOOL isTerm = isTerminalApp(frontApp);
         //fix autocomplete
-        if (shouldUseRecommendWorkaround(FRONT_APP)) {
+        if (shouldUseRecommendWorkaround(frontApp)) {
             SendEmptyCharacter();
             pData->backspaceCount++;
         }
@@ -892,7 +983,10 @@ extern "C" {
         //send backspace
         if (pData->backspaceCount > 0) {
             for (int i = 0; i < pData->backspaceCount; i++) {
-                SendBackspace();
+                SendBackspace(isTerm);
+            }
+            if (isTerm) {
+                usleep(1500);
             }
         }
         //send real data
@@ -1092,8 +1186,7 @@ extern "C" {
                         if (_syncKey.size() > 0) {
                             if (_syncKey.back() > 1 && (vCodeTable == 2 || !containUnicodeCompoundApp(FRONT_APP))) {
                                 //send one more backspace
-                                CGEventTapPostEvent(_proxy, eventBackSpaceDown);
-                                CGEventTapPostEvent(_proxy, eventBackSpaceUp);
+                                SendSingleBackspace(isTerminalApp(FRONT_APP));
                             }
                             _syncKey.pop_back();
                         }
@@ -1104,10 +1197,12 @@ extern "C" {
                 }
                 return event;
             } else if (pData->code == vWillProcess || pData->code == vRestore || pData->code == vRestoreAndStartNewSession) { //handle result signal
+                NSString* currentFrontApp = FRONT_APP;
+                BOOL isTerm = isTerminalApp(currentFrontApp);
                 
                 //fix autocomplete
-                if (shouldUseRecommendWorkaround(FRONT_APP) && pData->extCode != 4) {
-                    if (vFixChromiumBrowser && [_unicodeCompoundApp containsObject:FRONT_APP]) {
+                if (shouldUseRecommendWorkaround(currentFrontApp) && pData->extCode != 4) {
+                    if (vFixChromiumBrowser && [_unicodeCompoundApp containsObject:currentFrontApp]) {
                         if (pData->backspaceCount > 0) {
                             SendShiftAndLeftArrow();
                             if (pData->backspaceCount == 1)
@@ -1120,7 +1215,7 @@ extern "C" {
                     }
                 }
 
-                if (shouldUseSelectionReplacement(FRONT_APP) && pData->backspaceCount > 0) {
+                if (shouldUseSelectionReplacement(currentFrontApp) && pData->backspaceCount > 0) {
                     for (_i = 0; _i < pData->backspaceCount; _i++) {
                         SendShiftAndLeftArrow();
                     }
@@ -1130,7 +1225,10 @@ extern "C" {
                 //send backspace
                 if (pData->backspaceCount > 0 && pData->backspaceCount < MAX_BUFF) {
                     for (_i = 0; _i < pData->backspaceCount; _i++) {
-                        SendBackspace();
+                        SendBackspace(isTerm);
+                    }
+                    if (isTerm) {
+                        usleep(1500);
                     }
                 }
                 
