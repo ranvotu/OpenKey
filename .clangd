@@ -1,0 +1,8 @@
+CompileFlags:
+  Add:
+    - "-I${workspaceFolder}/Sources/OpenKey/engine"
+    - "-I${workspaceFolder}/Sources/OpenKey/macOS/ModernKey"
+    - "-x"
+    - "objective-c++"
+    - "-std=c++11"
+    - "-fobjc-arc"
